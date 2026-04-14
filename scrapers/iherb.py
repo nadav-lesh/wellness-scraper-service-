@@ -32,6 +32,7 @@ async def scrape_iherb(limit: int = 5) -> dict:
 async def _scrape_with_nodriver(limit: int) -> dict:
     browser = await uc.start(
         browser_executable_path=os.getenv("CHROME_BIN", "/usr/bin/chromium"),
+        browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         headless=True,
     )
     try:

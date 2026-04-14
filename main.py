@@ -31,8 +31,8 @@ def verify_api_key(api_key: str = Security(api_key_header)):
 @app.get("/health")
 async def health():
     key_set = bool(os.environ.get("SCRAPER_SERVICE_API_KEY"))
-    print(f"[Scraper] Health check — API key set: {key_set}")
-    return {"status": "ok", "api_key_set": key_set}
+    print(f"[Scraper] Health — API key set: {key_set}, chromium: {os.path.exists(os.getenv('CHROME_BIN', '/usr/bin/chromium'))}")
+    return {"status": "ok", "api_key_set": key_set, "chromium": os.path.exists(os.getenv("CHROME_BIN", "/usr/bin/chromium"))}
 
 
 @app.get("/scrape/iherb")
