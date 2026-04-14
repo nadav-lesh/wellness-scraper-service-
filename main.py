@@ -77,6 +77,7 @@ async def all_sources(
 
     def safe(label, result):
         if isinstance(result, Exception):
+            print(f"[Scraper] {label} raised exception: {result}")
             return {"source": label, "error": str(result), "products": []}
         return result
 

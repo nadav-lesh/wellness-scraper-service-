@@ -1,52 +1,52 @@
 """
-Super Pharm Israel Scraper
---------------------------
-Super Pharm is a React SPA — plain HTTPX returns empty HTML.
-Using nodriver (headless Chromium) to render the page fully.
-
+Super Pharm Israel Scraper — nodriver (React SPA, needs JS rendering).
 Target: https://www.super-pharm.co.il/departments/vitamins-supplements
 """
 
+import asyncio
 import os
 import nodriver as uc
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 SUPERPHARM_URL = "https://www.super-pharm.co.il/departments/vitamins-supplements"
 
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=3, max=10))
 async def scrape_superpharm(limit: int = 5) -> dict:
-    browser = await uc.start(
-        browser_executable_path=os.getenv("CHROME_BIN", "/usr/bin/chromium"),
-        browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        headless=True,
-    )
+    browser = None
     try:
-        page = await browser.get(SUPERPHARM_URL)
-        await page.wait_for(".product-item, .shelf-item, [data-product-id], .product-card", timeout=20)
+        browser = await uc.start(
+            browser_executable_path=os.getenv("CHROME_BIN", "/usr/bin/chromium"),
+            browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-setuid-sandbox"],
+            headless=True,
+        )
+        tab = await browser.get(SUPERPHARM_URL)
+
+        # Wait up to 20s for product cards to render
+        selectors = [".product-item", ".shelf-item", "[data-product-id]", ".product-card", ".product-tile"]
+        cards = []
+        for _ in range(20):
+            for sel in selectors:
+                cards = await tab.query_selector_all(sel)
+                if cards:
+                    break
+            if cards:
+                break
+            await asyncio.sleep(1)
 
         products = []
-        cards = await page.query_selector_all(".product-item, .shelf-item, [data-product-id], .product-card")
-
         for card in cards[:limit * 2]:
             try:
-                name_el  = await card.query_selector(".product-name, .item-name, h3, .product-title")
-                price_el = await card.query_selector(".product-price, .price-value, .price")
-                link_el  = await card.query_selector("a[href]")
-                img_el   = await card.query_selector("img")
+                name  = await _text(card, ".product-name, .item-name, h3, .product-title")
+                price = await _text(card, ".product-price, .price-value, .price")
+                link  = await _attr(card, "a[href]", "href")
+                img   = await _attr(card, "img", "src")
 
-                name = (await name_el.get_attribute("textContent") or "").strip() if name_el else ""
                 if not name or len(name) < 3:
                     continue
-
-                price = (await price_el.get_attribute("textContent") or "").strip() if price_el else ""
-                href  = await link_el.get_attribute("href") if link_el else ""
-                img   = await img_el.get_attribute("src") if img_el else ""
 
                 products.append({
                     "name":   name,
                     "price":  price,
-                    "url":    href if href.startswith("http") else f"https://www.super-pharm.co.il{href}",
+                    "url":    link if link.startswith("http") else f"https://www.super-pharm.co.il{link}",
                     "image":  img,
                     "source": "superpharm",
                 })
@@ -56,10 +56,40 @@ async def scrape_superpharm(limit: int = 5) -> dict:
             except Exception:
                 continue
 
-        if not products:
-            raise RuntimeError("SuperPharm scraper found 0 products — selectors may need updating")
-
         return {"source": "superpharm", "products": products}
 
+    except Exception as e:
+        print(f"[SuperPharm] Scrape failed: {e}")
+        return {"source": "superpharm", "products": [], "error": str(e)}
     finally:
-        browser.stop()
+        if browser:
+            try:
+                browser.stop()
+            except Exception:
+                pass
+
+
+async def _text(parent, selector: str) -> str:
+    """Try multiple comma-separated selectors, return first match."""
+    for sel in selector.split(","):
+        try:
+            el = await parent.query_selector(sel.strip())
+            if el:
+                val = await el.get_attribute("textContent")
+                text = (val or "").strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return ""
+
+
+async def _attr(parent, selector: str, attr: str) -> str:
+    try:
+        el = await parent.query_selector(selector)
+        if not el:
+            return ""
+        val = await el.get_attribute(attr)
+        return (val or "").strip()
+    except Exception:
+        return ""
