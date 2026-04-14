@@ -1,95 +1,66 @@
 """
-Super Pharm Israel Scraper — nodriver (React SPA, needs JS rendering).
-Target: https://www.super-pharm.co.il/departments/vitamins-supplements
+Super Pharm Israel Scraper
+--------------------------
+Super Pharm is a React SPA — plain HTTPX returns empty HTML.
+Requires ScrapingBee or similar managed browser service.
+
+Set SCRAPINGBEE_API_KEY in Railway to enable.
 """
 
-import asyncio
 import os
-import nodriver as uc
+import httpx
+from bs4 import BeautifulSoup
 
 SUPERPHARM_URL = "https://www.super-pharm.co.il/departments/vitamins-supplements"
 
 
 async def scrape_superpharm(limit: int = 5) -> dict:
-    browser = None
+    api_key = os.environ.get("SCRAPINGBEE_API_KEY")
+    if not api_key:
+        print("[SuperPharm] SCRAPINGBEE_API_KEY not set — skipping SuperPharm scrape")
+        return {"source": "superpharm", "products": [], "error": "SCRAPINGBEE_API_KEY not configured"}
+
     try:
-        browser = await uc.start(
-            browser_executable_path=os.getenv("CHROME_BIN", "/usr/bin/chromium"),
-            browser_args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-setuid-sandbox"],
-            headless=True,
-        )
-        tab = await browser.get(SUPERPHARM_URL)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                "https://app.scrapingbee.com/api/v1/",
+                params={
+                    "api_key": api_key,
+                    "url": SUPERPHARM_URL,
+                    "render_js": "true",
+                    "wait_for": ".product-item",
+                },
+            )
+            resp.raise_for_status()
 
-        # Wait up to 20s for product cards to render
-        selectors = [".product-item", ".shelf-item", "[data-product-id]", ".product-card", ".product-tile"]
-        cards = []
-        for _ in range(20):
-            for sel in selectors:
-                cards = await tab.query_selector_all(sel)
-                if cards:
-                    break
-            if cards:
-                break
-            await asyncio.sleep(1)
-
+        soup = BeautifulSoup(resp.text, "lxml")
+        cards = soup.select(".product-item, .shelf-item, [data-product-id]")[:limit * 2]
         products = []
-        for card in cards[:limit * 2]:
-            try:
-                name  = await _text(card, ".product-name, .item-name, h3, .product-title")
-                price = await _text(card, ".product-price, .price-value, .price")
-                link  = await _attr(card, "a[href]", "href")
-                img   = await _attr(card, "img", "src")
 
-                if not name or len(name) < 3:
-                    continue
+        for card in cards:
+            name_el  = card.select_one(".product-name, .item-name, h3")
+            price_el = card.select_one(".product-price, .price-value, .price")
+            link_el  = card.select_one("a[href]")
+            img_el   = card.select_one("img")
 
-                products.append({
-                    "name":   name,
-                    "price":  price,
-                    "url":    link if link.startswith("http") else f"https://www.super-pharm.co.il{link}",
-                    "image":  img,
-                    "source": "superpharm",
-                })
-
-                if len(products) >= limit:
-                    break
-            except Exception:
+            name = name_el.get_text(strip=True) if name_el else ""
+            if not name or len(name) < 3:
                 continue
+
+            href = link_el.get("href", "") if link_el else ""
+            products.append({
+                "name":   name,
+                "price":  price_el.get_text(strip=True) if price_el else "",
+                "url":    href if href.startswith("http") else f"https://www.super-pharm.co.il{href}",
+                "image":  img_el.get("src", "") if img_el else "",
+                "source": "superpharm",
+            })
+
+            if len(products) >= limit:
+                break
 
         return {"source": "superpharm", "products": products}
 
     except Exception as e:
-        print(f"[SuperPharm] Scrape failed: {e}")
+        print(f"[SuperPharm] ScrapingBee failed: {e}")
         return {"source": "superpharm", "products": [], "error": str(e)}
-    finally:
-        if browser:
-            try:
-                browser.stop()
-            except Exception:
-                pass
-
-
-async def _text(parent, selector: str) -> str:
-    """Try multiple comma-separated selectors, return first match."""
-    for sel in selector.split(","):
-        try:
-            el = await parent.query_selector(sel.strip())
-            if el:
-                val = await el.get_attribute("textContent")
-                text = (val or "").strip()
-                if text:
-                    return text
-        except Exception:
-            continue
-    return ""
-
-
-async def _attr(parent, selector: str, attr: str) -> str:
-    try:
-        el = await parent.query_selector(selector)
-        if not el:
-            return ""
-        val = await el.get_attribute(attr)
-        return (val or "").strip()
-    except Exception:
-        return ""
